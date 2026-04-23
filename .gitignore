@@ -12,6 +12,7 @@ coverage/
 __pycache__/
 
 *.mp4
+!public/**/*.mp4
 *.mp3
 *.wav
 config.yaml
