@@ -1,0 +1,131 @@
+# 项目名称与通用配置
+project_name: "MultiLLMProject"
+version: "1.0"
+
+# 基础共享配置（全项目共用）
+basic:
+  hf_token: ""
+  media_upload:
+    method: "huggingface"
+    enabled: true
+    types:
+      - videos
+    huggingface:
+      repo_id: ""
+      repo_type: "dataset"
+      prefix: "videos"
+      public_base_url: "https://hf-mirror.com"
+    dashscope:
+      api_key: ""
+      base_url: "https://dashscope.aliyuncs.com/api/v1"
+      purpose: "file-extract"
+      description: ""
+
+# LLM 核心配置区域
+llms:
+  # 自定义名称 1：用于主要对话的 OpenAI
+  primary_openai:
+    provider: "openai"
+    api_url: "https://api.openai.com/v1"
+    api_key: "sk-xxxxxxxxxxxxxxxxxxxxxxxx"
+    default_model: "gpt-4-turbo"
+    parameters:
+      temperature: 0.7
+      max_tokens: 4096
+
+  # 自定义名称 2：用于长文本处理的 Gemini
+  google_gemini:
+    provider: "google"
+    api_url: "https://generativelanguage.googleapis.com/v1beta"
+    api_key: "AIzaSyxxxxxxxxxxxxxxxxxxxxxxxx"
+    default_model: "gemini-1.5-pro"
+    parameters:
+      temperature: 0.2
+      max_tokens: 8192
+
+  # 自定义名称 3：本地部署的免费模型
+  local_ollama:
+    provider: "ollama"
+    api_url: "http://localhost:11434/api"
+    api_key: ""
+    default_model: "llama3"
+    parameters:
+      temperature: 0.5
+
+# 工具配置区域
+tools:
+  cosyvoice3_online:
+    provider: "gradio"
+    task: "tts"
+    default_model: "FunAudioLLM/Fun-CosyVoice3-0.5B"
+    space: "FunAudioLLM/Fun-CosyVoice3-0.5B"
+    api_name: "/generate_audio"
+    inputs:
+      - target_text
+      - prompt_transcript
+      - prompt_wav
+    notes: "CosyVoice3 online zero-shot via Gradio API."
+    parameters:
+      mode_value: "zero_shot"
+      instruct_text: "You are a helpful assistant. <|endofprompt|>"
+      seed: 0
+      ui_lang: "Zh"
+
+  mmaudio_online:
+    provider: "gradio"
+    task: "sfx"
+    default_model: "hkchengrex/MMAudio"
+    space: "xscdvfaaqqq/MMAudio"
+    inputs:
+      - prompt
+      - negative_prompt
+      - seed
+      - num_steps
+      - cfg_strength
+      - duration
+      - video
+    notes: "MMAudio online video-to-audio/text-to-audio via Gradio API."
+    parameters:
+      negative_prompt: "music"
+
+  inspiremusic_online:
+    provider: "gradio"
+    task: "music"
+    default_model: "xscdvfaaqqq/InspireMusic"
+    space: "xscdvfaaqqq/InspireMusic"
+    api_name: "/demo_inspiremusic_t2m"
+    inputs:
+      - text
+      - model_name
+      - chorus
+      - output_sample_rate
+      - max_generate_audio_seconds
+      - seconds
+    notes: "InspireMusic online text-to-music via Gradio API (t2m)."
+    parameters:
+      model_name: "InspireMusic-1.5B-Long"
+      chorus: "intro"
+      output_sample_rate: 24000
+
+  diffrhythm_online:
+    provider: "gradio"
+    task: "song_gen"
+    default_model: "ASLP-lab/DiffRhythm"
+    space: "xscdvfaaqqq/DiffRhythm"
+    inputs:
+      - lrc
+      - ref_audio_path
+      - text_prompt
+      - seed
+      - randomize_seed
+      - steps
+      - cfg_strength
+      - file_type
+      - odeint_method
+      - preference_infer
+      - Music_Duration
+    notes: "DiffRhythm online song generation via Gradio API."
+    parameters:
+      file_type: "mp3"
+      odeint_method: "euler"
+      preference_infer: "quality first"

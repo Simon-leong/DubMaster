@@ -1,0 +1,54 @@
+# .dockerignore — Files excluded from the Docker build context
+# This speeds up builds and prevents secrets from entering the image.
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+*.egg-info/
+
+# Vite build output (rebuilt inside Docker by the frontend-builder stage)
+dist/
+
+# Local development secrets — NEVER copy into the Docker image
+.env
+.env.local
+.env.production
+.env.*.local
+
+# Local runtime data — these live on the Fly.io Volume (/data), not in the image
+backend/dubmaster.db
+backend/dubmaster.db-wal
+backend/dubmaster.db-shm
+backend/uploads/
+outputs/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# macOS
+.DS_Store
+
+# Test artifacts
+tests/__pycache__/
+*.pytest_cache/
+coverage/
+
+# Documentation (not needed at runtime)
+docs/
+README.md

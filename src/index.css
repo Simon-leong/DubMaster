@@ -1,0 +1,76 @@
+@import url('https://fonts.googleapis.com/css2?family=Manrope:wght@400;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-headline: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-body: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* ── Material Design 3 Light – Purple Primary ── */
+  --color-background: #faf8ff;
+  --color-on-background: #1d1b20;
+  --color-surface: #faf8ff;
+  --color-on-surface: #1d1b20;
+  --color-on-surface-variant: #49454f;
+  --color-surface-dim: #ddd8e0;
+  --color-surface-bright: #faf8ff;
+  --color-surface-container-lowest: #ffffff;
+  --color-surface-container-low: #f5f0f8;
+  --color-surface-container: #efebf4;
+  --color-surface-container-high: #e9e5ee;
+  --color-surface-container-highest: #e3dfe8;
+  --color-surface-variant: #e7e0ec;
+  --color-surface-tint: #6750a4;
+  --color-primary: #6750a4;
+  --color-on-primary: #ffffff;
+  --color-primary-container: #eaddff;
+  --color-on-primary-container: #21005d;
+  --color-primary-fixed: #eaddff;
+  --color-primary-fixed-dim: #d0bcff;
+  --color-on-primary-fixed: #21005d;
+  --color-on-primary-fixed-variant: #4f378b;
+  --color-secondary: #625b71;
+  --color-on-secondary: #ffffff;
+  --color-secondary-container: #e8def8;
+  --color-on-secondary-container: #1d192b;
+  --color-secondary-fixed: #e8def8;
+  --color-secondary-fixed-dim: #ccc2dc;
+  --color-on-secondary-fixed: #1d192b;
+  --color-on-secondary-fixed-variant: #4a4458;
+  --color-tertiary: #7d5260;
+  --color-on-tertiary: #ffffff;
+  --color-tertiary-container: #ffd8e4;
+  --color-on-tertiary-container: #31111d;
+  --color-tertiary-fixed: #ffd8e4;
+  --color-tertiary-fixed-dim: #efb8c8;
+  --color-on-tertiary-fixed: #31111d;
+  --color-on-tertiary-fixed-variant: #633b48;
+  --color-error: #b3261e;
+  --color-on-error: #ffffff;
+  --color-error-container: #f9dedc;
+  --color-on-error-container: #410e0b;
+  --color-outline: #79747e;
+  --color-outline-variant: #cac4d0;
+  --color-inverse-surface: #313033;
+  --color-inverse-on-surface: #f4eff4;
+  --color-inverse-primary: #d0bcff;
+}
+
+@layer base {
+  body {
+    @apply bg-background text-on-surface font-body selection:bg-primary/20 min-h-screen flex flex-col;
+  }
+}
+
+.animate-spin-slow {
+  animation: spin 8s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}

@@ -1,0 +1,51 @@
+# fly.toml — Fly.io configuration for DubMaster
+# Documentation: https://fly.io/docs/reference/configuration/
+
+app = "dubmaster"
+primary_region = "sin"   # Singapore — geographically closest to NUS
+
+[build]
+  dockerfile = "Dockerfile"
+
+# Non-secret environment variables (safe to commit)
+# Secrets (API keys) are set via: fly secrets set KEY=value
+[env]
+  DATABASE_PATH = "/data/dubmaster.db"
+  UPLOAD_DIR    = "/data/uploads"
+  OUTPUT_DIR    = "/data/outputs"
+  # No ALLOWED_ORIGINS needed: frontend is served from the same FastAPI process,
+  # so all requests are same-origin (VITE_API_BASE_URL="" → relative paths) and
+  # CORS does not apply.
+
+[http_service]
+  internal_port       = 8080
+  force_https         = true   # Redirect HTTP → HTTPS automatically
+
+  # IMPORTANT: Never auto-stop the machine.
+  # The multi-agent audio generation pipeline runs as background threads
+  # that may take 10-30+ minutes. If the machine sleeps mid-job, the task
+  # will be silently killed and the generation will fail.
+  auto_stop_machines  = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # Allow the frontend status-polling requests to stay connected
+  [http_service.concurrency]
+    type       = "requests"
+    hard_limit = 25
+    soft_limit = 20
+
+[[vm]]
+  # 1 GB RAM is sufficient for the FastAPI process + background pipeline threads.
+  # The heavy ML work (Gradio Spaces for TTS, SFX, music) runs on external servers.
+  memory   = "1gb"
+  cpu_kind = "shared"
+  cpus     = 1
+
+# Persistent volume: stores the SQLite database, uploaded files, and outputs.
+# Create the volume once with: fly volumes create dubmaster_data --region sin --size 10
+# The volume persists across deploys and machine restarts.
+[[mounts]]
+  source      = "dubmaster_data"
+  destination = "/data"
+  initial_size = "10gb"
