@@ -115,8 +115,8 @@ No local GPU required. All model inference runs on HuggingFace Gradio Spaces.
 **Prerequisites:** Node 20+, Python 3.11+, a HuggingFace account (Pro recommended), a Kimi API key or any OpenAI-compatible endpoint.
 
 ```bash
-git clone https://github.com/hujuncheng27-max/Audiogenie
-cd Audiogenie
+git clone https://github.com/Simon-leong/DubMaster.git
+cd DubMaster
 
 npm install
 pip install -r requirements.txt -r backend/requirements.txt
