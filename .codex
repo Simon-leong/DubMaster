@@ -1,0 +1,3 @@
+# Workspace Memory
+
+- In the actual visible DubMaster release, the Processing page/state has been invisiblized. Do not describe Processing as a main user-facing frontend view in reports; treat it as hidden/internal status handling only.
