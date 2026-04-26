@@ -1,15 +1,15 @@
 # DubMaster Implementation Report
 
-## Shipping a Training-Free Multi-Agent Audio Generator
+The default approach to audio generation is to ask one model to handle everything: feed it a prompt and hope the output lands somewhere useful. When it doesn't, you have no clear place to intervene. DubMaster is our answer to that problem — a training-free multi-agent pipeline that breaks the task into stages where each failure mode has an owner.
 
-DubMaster is our release-style project for turning a video, image, or text prompt into a layered audio result. Instead of fine-tuning a single model, we built the system as a training-free multi-agent pipeline: one part plans the sound events, another part routes them to domain experts, another part generates and critiques candidates, and the final part mixes everything back onto a shared timeline.
+Rather than fine-tuning a model on audio-video pairs, we coordinate a set of frozen specialists: a planning stage that converts source material into a typed event timeline, domain experts that translate each event into model-specific arguments, a memory-tree search loop that generates and critiques candidates, and a mixer that assembles the approved clips. Sound effects, speech, background music, and song are handled by separate code paths with different generation strategies.
 
-The final product is split into two main layers:
+On the product side, there are two layers:
 
 - A React frontend where users upload source material, choose audio categories, monitor generation, preview results, and export history items.
-- A FastAPI backend that stores jobs, runs the multi-agent audio pipeline, manages uploaded files, and serves generated audio or video artifacts.
+- A FastAPI backend that stores jobs, runs the multi-agent pipeline, manages uploaded files, and serves the generated artifacts.
 
-At a high level, the release works like this:
+The request flow:
 
 <div style="width: 100%; margin: 0 auto;">
 
@@ -84,7 +84,7 @@ This keeps the generation request small and lets the backend resolve file refere
 
 All network calls live in `src/services/api.ts`. This gave us one place to define the backend base URL, request error handling, upload helpers, generation creation, status polling, preview URLs, and export requests.
 
-The polling loop is intentionally simple:
+There's no WebSocket or server-sent events — the loop polls on a three-second interval and exits when the job resolves or the ten-minute budget runs out:
 
 ```ts
 while (Date.now() - startedAt < DEFAULT_POLL_TIMEOUT_MS) {
@@ -99,9 +99,9 @@ while (Date.now() - startedAt < DEFAULT_POLL_TIMEOUT_MS) {
 }
 ```
 
-This matches the backend model: a generation job is inserted quickly, then a background worker updates its status and stage. The frontend only needs to poll the status endpoint and render whatever stage is current.
+A generation job is inserted immediately, then a background worker updates its status and stage. The frontend only needs to poll the status endpoint and render whatever stage is current.
 
-### Hidden processing state
+### Tracking pipeline stages in the background
 
 The backend exposes stages such as `planning`, `assigning`, `synthesizing`, and `mixing`; the frontend still maps those updates into active generation state. In the actual visible version, however, the dedicated Processing page has been hidden, so we should treat it as internal implementation support rather than a major user-facing view.
 
@@ -111,7 +111,7 @@ This hidden status layer still matters because audio generation can take a long 
 - Stage 2: Expert Routing
 - Stage 3: Synthesis and Mix
 
-The key point is that progress exists as application state, not as a visible standalone page in the current release.
+Progress exists as application state, not as a visible standalone page in the current release.
 
 ### History, preview, and export
 
@@ -129,7 +129,7 @@ The preview first tries to render as video, then falls back to audio. This suppo
 
 ## Backend
 
-The backend is a FastAPI application under `backend/app/`. Its job is to expose a clean API while hiding the heavier multi-agent system in the Python project root.
+Generation can take several minutes. The backend is designed around that fact: a FastAPI application under `backend/app/` that accepts a request, records a job row, and immediately hands off execution to a daemon thread. The API contract stays fast and stable while the pipeline runs at its own pace.
 
 The backend is made of four main pieces:
 
@@ -142,7 +142,7 @@ The backend is made of four main pieces:
 
 The request and response shapes are defined with Pydantic in `schemas.py`. The key payload is `GenerationPayload`, which carries the prompt, output class, target duration, optional uploaded file refs, optional speech fields, and frontend render settings.
 
-The backend status model is small by design:
+The status model deliberately separates API contract from execution detail:
 
 ```py
 class GenerationStatus(str, Enum):
@@ -190,7 +190,7 @@ SQLite is enough for the release/demo scope because jobs are run by one backend 
 
 ### Background generation worker
 
-The important backend implementation is `GenerationService`. When `/generations` receives a request, it creates a job row immediately and starts the real pipeline in a daemon thread:
+The real work happens in `GenerationService`. When `/generations` receives a request, it creates a job row immediately and starts the pipeline in a daemon thread:
 
 ```py
 thread = threading.Thread(
@@ -260,7 +260,7 @@ class AudioEvent:
 
 We also added a hard constraint pass in the backend. Even if the LLM ignores a soft hint, `_enforce_user_constraints()` filters events to the selected output class and clamps event timing to the requested duration. If filtering removes everything, the backend creates a fallback event so the job still has a useful path forward.
 
-The planning prompt is intentionally strict because downstream code depends on a parseable event list. The actual prompt is longer, but the template looks like this:
+The planning prompt is strict on purpose: downstream code depends on a parseable event list. The actual prompt is longer, but the template looks like this:
 
 ```text
 System:
@@ -297,7 +297,7 @@ Then we append user constraints such as selected output class, target duration, 
 
 ### Stage 2: expert routing
 
-After planning, `GenerationTeam.assign_and_refine()` routes each event to a domain expert in `experts.py`:
+Once the event list passes the `_enforce_user_constraints()` filter, `GenerationTeam.assign_and_refine()` routes each event to a domain expert in `experts.py`:
 
 - `SFXExpert` handles sound effects. It can receive video or text input, and generate sound effects with or without video conditioning.
 
@@ -338,7 +338,7 @@ Return JSON only:
 
 This probe step is important because video-conditioned sound effects behave differently from text-only sound effects. If the video model already captures the timing of the visual scene, keeping it preserves synchronization and saves search budget.
 
-#### Implement the expert tools
+### Implementing expert tools
 
 The experts do not run heavy neural models directly inside FastAPI. Most audio models need GPU acceleration, so we deploy or reuse them as Hugging Face Spaces and call them through API wrappers.
 
@@ -365,7 +365,7 @@ As for the deployment of a space containing desired models, we refer to the [Gra
 
 ### Stage 3: Tree-of-Thought synthesis with memory
 
-The synthesis loop lives in `tot.py`, supported by `tree_memory.py`. This is the core backend algorithm: instead of hoping for one lucky model output, DubMaster treats audio generation as a heuristic search over candidate WAV files. For every planned `AudioEvent`, the backend builds a small search tree and maintains a per-event `TreeMemory` that carries context across attempts and across candidate models.
+The synthesis loop lives in `tot.py`, supported by `tree_memory.py`. Instead of hoping for one lucky model output, DubMaster treats audio generation as a heuristic search over candidate WAV files. For every planned `AudioEvent`, the backend builds a search tree up to three siblings wide and three levels deep — nine generation calls per event at most, though early stopping usually cuts that short. A per-event `TreeMemory` carries context across attempts and across candidate models.
 
 The memory tree records:
 
@@ -421,7 +421,7 @@ The search starts by retrieving memory and aggregating inputs. Before a new gene
 
 If earlier attempts failed, the next prompt is not blind: `_prewarm_initial_args()` and `_revise_text_prompt()` combine accumulated critiques from previous critic suggestions with the current predefined focus hints, original event description, timing, audio type, and model-specific arguments to create a more targeted prompt.
 
-With that context ready, `ToTExecutor` creates a node and generates audio. The root node is `initial`, the first model attempt is `generation`, and later attempts are `refinement` nodes linked back to their parent. Each valid or failed attempt is logged into the tree and into memory, so the output of Stage 3 is not just a WAV file; it is also an auditable record of how the system searched.
+`ToTExecutor` then creates a node and generates audio. The root node is `initial`, the first model attempt is `generation`, and later attempts are `refinement` nodes linked back to their parent. Before any scoring happens, `_audio_is_non_silent()` checks that the returned file actually contains sound — a basic guard against models that occasionally produce empty output. Each valid or failed attempt is logged into the tree and into memory, so the output of Stage 3 is not just a WAV file; it is also an auditable record of how the system searched.
 
 The crucial evaluation step is the MLLM critic. When the predefined MLLM critic is available, `AudioEvalCritic` listens to the generated WAV and scores it on three dimensions: `alignment`, `quality`, and `aesthetics`. If the audio is not good enough, `_diagnose_failure()` identifies the weakest dimension and the next refinement performs a focused revision on that exact failure mode. The loop repeats until the system finds a better candidate, abandons a non-improving model, or reaches the early stopping checkpoint. We use a powerful MLLM critic, `Qwen3-Omni`, for the best capture of audio quality and alignment issues, ensuring the search is guided by a reliable judge.
 
@@ -438,7 +438,7 @@ weighted_score = 0.50 * alignment + 0.35 * quality + 0.15 * aesthetics
 This weighted score is used to update the global best candidate and to decide whether a model is still improving. The early stopping checkpoint remains stricter than a single weighted number: it requires each dimension to pass its own minimum threshold, so a very high quality score cannot hide poor alignment.
 
 
-### LLM templates used by the core algorithm
+#### LLM templates used by the core algorithm
 
 The Memory-Tree loop depends on three LLM templates: critic scoring, prompt refinement, and cross-model prewarming.
 
@@ -566,7 +566,7 @@ The frontend can then preview `/generations/{id}/preview` or download from `/gen
 
 ## Frontend and Backend Integration
 
-The full interaction between the two layers is intentionally small:
+We kept the API surface between the two layers narrow:
 
 ```mermaid
 sequenceDiagram
@@ -594,7 +594,7 @@ sequenceDiagram
     API-->>FE: Stream final media
 ```
 
-This division made development easier. The frontend only needs stable API states; the backend can keep improving the generation internals without changing the user flow.
+The frontend tracks four `GenerationStatus` values — the API contract. The backend exposes six `GenerationStage` values as execution detail. That separation meant the two sides could evolve independently: the pipeline could add or rearrange stages without touching a single API response shape.
 
 ## What We Focused On
 
@@ -608,6 +608,4 @@ We skipped unnecessary complexity such as account systems, cloud object storage,
 
 ## Final Result
 
-In this release, we built DubMaster as a full-stack audio generation system. The frontend provides an approachable production-style interface, while the backend coordinates file storage, job state, multi-agent planning, model routing, synthesis, critique, and final mixing.
-
-The main lesson from our implementation is that audio generation becomes easier to control when we do not ask one model to do everything. By splitting the task into planning, expert routing, synthesis, critique, and mixing, we created a pipeline where each stage has a clear responsibility and can be improved independently.
+In this release, we built DubMaster as a full-stack audio generation system. The frontend provides an approachable production-style interface, while the backend coordinates file storage, job state, multi-agent planning, model routing, synthesis, critique, and final mixing. The main lesson from our implementation is that audio generation becomes easier to control when we do not ask one model to do everything. By splitting the task into planning, expert routing, synthesis, critique, and mixing, we created a pipeline where each stage has a clear responsibility and can be improved independently.
