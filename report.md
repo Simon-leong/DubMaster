@@ -15,7 +15,7 @@ At a high level, the release works like this:
 
 ```mermaid
 %%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 24, "rankSpacing": 30}, "themeVariables": {"fontSize": "12px"}} }%%
-flowchart TB
+flowchart LR
     subgraph REQUEST[Request layer]
         direction LR
         A[User input<br/>media / prompt / voice] --> B[React workspace]
@@ -29,7 +29,7 @@ flowchart TB
     end
 
     subgraph RESULT[Result layer]
-        direction LR
+        direction TD
         G[Preview / export] --> H[History]
     end
 
@@ -207,7 +207,7 @@ Inside `_pipeline_worker`, we run the project in four stages.
 
 ```mermaid
 %%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 24, "rankSpacing": 28}, "themeVariables": {"fontSize": "12px"}} }%%
-flowchart TB
+flowchart LR
     subgraph ROW1[Reasoning]
         direction LR
         P[Plan events] --> R[Route + refine]
@@ -301,15 +301,13 @@ After planning, `GenerationTeam.assign_and_refine()` routes each event to a doma
 
 - `SFXExpert` handles sound effects. It can receive video or text input, and generate sound effects with or without video conditioning.
 
-    It prefers video-conditioned model when a source video is available, runs a generation, and decides whether to keep the generation or fall back to text-only SFX generation. This process can be seen as a probe: we test the video-conditioned model's ability to capture on-screen SFX, then decide whether to keep it or switch to a text-only model for that event.
-
-    Here, we use MMAudio as the core model.
+    - It prefers video-conditioned model when a source video is available, runs a generation, and decides whether to keep the generation or fall back to text-only SFX generation. This process can be seen as a probe: we test the video-conditioned model's ability to capture on-screen SFX, then decide whether to keep it or switch to a text-only model for that event. Here, we use MMAudio as the core model.
 
 - `SpeechExpert` handles speech and voice cloning. It receives the reference voice, obtains the prompt transcript automatically, and respects the user's target utterance. The generated audio is implemented with the SOTA CosyVoice3 model.
 
-- `MusicExpert` handles instrumental **background music**. It converts each music event into a concise style prompt, chooses a musical section label such as intro or verse, and prepares InspireMusic inputs. The result is a piece of music that fits the scene and timing but does not have lyrics.
+- `MusicExpert` handles instrumental **background music**. It converts each music event into a concise style prompt, chooses a musical section label such as intro or verse, and prepares inputs. The result is a piece of music that fits the scene and timing but does not have lyrics. We use InspireMusic as the core model.
 
-- `SongExpert` handles lyric-timed song generation. It asks the LLM to write an LRC file, creates a reference style prompt, and prepares DiffRhythm inputs for vocal music.
+- `SongExpert` handles lyric-timed song generation. It asks the LLM to write an LRC file, creates a reference style prompt, and prepares inputs for vocal music. We use DiffRhythm for this part.
 
 Each expert converts a general event into model-specific inputs. This keeps Stage 1 simple: the planner only needs to describe what should happen, while Stage 2 decides how each event should be synthesized.
 
@@ -340,7 +338,7 @@ Return JSON only:
 
 This probe step is important because video-conditioned sound effects behave differently from text-only sound effects. If the video model already captures the timing of the visual scene, keeping it preserves synchronization and saves search budget.
 
-#### How to implement the experts
+#### Implement the expert tools
 
 The experts do not run heavy neural models directly inside FastAPI. Most audio models need GPU acceleration, so we deploy or reuse them as Hugging Face Spaces and call them through API wrappers.
 
@@ -367,21 +365,26 @@ As for the deployment of a space containing desired models, we refer to the [Gra
 
 ### Stage 3: Tree-of-Thought synthesis with memory
 
-The synthesis loop lives in `tot.py`, supported by `tree_memory.py`. This is the core backend algorithm. We call it Memory-Tree-of-Thought because it combines a tree-shaped retry structure with a memory module shared across candidate models.
+The synthesis loop lives in `tot.py`, supported by `tree_memory.py`. This is the core backend algorithm: instead of hoping for one lucky model output, DubMaster treats audio generation as a heuristic search over candidate WAV files. For every planned `AudioEvent`, the backend builds a small search tree and maintains a per-event `TreeMemory` that carries context across attempts and across candidate models.
 
-For each event, the system tries candidate models, evaluates generated audio, records scores and suggestions, and revises prompts when needed. The output of this stage is not just a WAV file; it is also a snapshot of the explored nodes and memory records, which helps us debug why a certain candidate won.
-
-The memory tree remembers:
+The memory tree records:
 
 - which model was tried,
 - which arguments were used,
 - what scores it received,
 - what suggestions the critic produced,
+- which parent node it refined,
 - and which node led to the best result.
 
 The current data unit is `NodeRecord`:
 
 ```py
+SCORE_WEIGHTS: Dict[str, float] = {
+    "alignment": 0.5,
+    "quality": 0.35,
+    "aesthetics": 0.15,
+}
+
 @dataclass
 class NodeRecord:
     node_id: str
@@ -398,58 +401,42 @@ class NodeRecord:
     def weighted_score(self) -> float:
         return sum(self.scores.get(k, 0.0) * w for k, w in SCORE_WEIGHTS.items())
 ```
-
 `TreeMemory` can return three useful views of the search:
 
 - `path_history`: the current node's ancestor chain.
 - `global_best`: the best scored record in the whole event search.
 - `all_suggestions`: deduplicated critic suggestions from every attempt.
 
+The `global_best` candidate has two concrete jobs. First, it is included in `memory_context` during prompt refinement, so the LLM can compare the current failing branch against the strongest attempt seen anywhere in the tree, not just the immediately previous node. This prevents the refinement loop from forgetting what already worked. Second, `tot.py` keeps a parallel `best_wav` / `best_scores` pair and updates it only when a valid WAV beats the previous weighted score. That means if a later refinement becomes worse, DubMaster can still return the best valid audio discovered during the search.
+
 That memory context is sent back into the LLM when we refine a prompt. In other words, the next attempt does not only know the immediately previous failure; it can see the best attempt and every useful warning so far.
 
-The search flow is:
+The search flow is shown below.
 
-```mermaid
-%%{init: {"flowchart": {"curve": "basis", "nodeSpacing": 22, "rankSpacing": 28}, "themeVariables": {"fontSize": "11px"}} }%%
-flowchart TB
-    A[AudioEvent<br/>+ candidates] --> B{Use kept<br/>SFX probe?}
-    B -- yes --> T[Return best WAV]
+<img src="assets/Picture1.png" alt="Memory-Tree-of-Thought search flow"/>
 
-    subgraph SEARCH[Memory-tree search]
-        direction LR
-        C[Prepare attempt<br/>model + prompt] --> D[Generate + validate<br/>WAV]
-        D --> E[Critic score<br/>+ memory record]
-    end
+<p align="center"><em>Figure 1. Memory-Tree-of-Thought search flow for one audio event: retrieve memory, aggregate critiques, generate a node, evaluate with the MLLM critic, diagnose the weakest score dimension, revise the prompt, and stop early once the quality threshold is met.</em></p>
 
-    B -- no --> C
-    E --> F{Good enough?}
-    F -- yes --> T
-    F -- no --> G[Refine prompt<br/>or switch model]
-    G --> C
+The search starts by retrieving memory and aggregating inputs. Before a new generation attempt, `TreeMemory` exposes the current path history, the global best attempt, and all deduplicated critic suggestions.
 
-    classDef start fill:#fef3c7,stroke:#d97706,color:#1f2937;
-    classDef process fill:#dbeafe,stroke:#2563eb,color:#1f2937;
-    classDef decision fill:#f3e8ff,stroke:#9333ea,color:#1f2937;
-    classDef output fill:#dcfce7,stroke:#16a34a,color:#1f2937;
-    class A start;
-    class C,D,E,G process;
-    class B,F decision;
-    class T output;
-```
+If earlier attempts failed, the next prompt is not blind: `_prewarm_initial_args()` and `_revise_text_prompt()` combine accumulated critiques from previous critic suggestions with the current predefined focus hints, original event description, timing, audio type, and model-specific arguments to create a more targeted prompt.
 
-There are four details that make this better than a simple retry loop.
+With that context ready, `ToTExecutor` creates a node and generates audio. The root node is `initial`, the first model attempt is `generation`, and later attempts are `refinement` nodes linked back to their parent. Each valid or failed attempt is logged into the tree and into memory, so the output of Stage 3 is not just a WAV file; it is also an auditable record of how the system searched.
 
-First, refinements form an actual chain. A refinement node points to the previous attempt, so `path_history` can reconstruct how the prompt changed over time.
+The crucial evaluation step is the MLLM critic. When the predefined MLLM critic is available, `AudioEvalCritic` listens to the generated WAV and scores it on three dimensions: `alignment`, `quality`, and `aesthetics`. If the audio is not good enough, `_diagnose_failure()` identifies the weakest dimension and the next refinement performs a focused revision on that exact failure mode. The loop repeats until the system finds a better candidate, abandons a non-improving model, or reaches the early stopping checkpoint. We use a powerful MLLM critic, `Qwen3-Omni`, for the best capture of audio quality and alignment issues, ensuring the search is guided by a reliable judge.
 
-Second, scoring is weighted. Alignment has the largest weight because sound that is beautiful but detached from the scene is still wrong for dubbing. The weighted score is:
+Early stopping keeps compute costs under control. As soon as a candidate crosses the quality threshold in `_best_threshold_met()`, the loop returns that result immediately. We set `alignment >= 0.7`, `quality >= 0.6`, and `aesthetics >= 0.6`, so DubMaster locks in audio that is not only high-fidelity, but also contextually aligned with the planned event.
+
+We intentionally do not treat the three critic scores as equal. `alignment` receives the highest weight (`0.50`) because a generated sound can be clean and pleasant while still being useless for dubbing if it does not match the event, object, or timing. `quality` receives the next largest weight (`0.35`) to favor clear, non-noisy, high-fidelity audio. `aesthetics` receives a smaller but still meaningful weight (`0.15`) because style and emotional fit matter after the sound is aligned and technically usable.
+
+In formula form:
 
 ```text
 weighted_score = 0.50 * alignment + 0.35 * quality + 0.15 * aesthetics
 ```
 
-Third, the system can abandon a model early. If two attempts from the same model do not improve the weighted score, the loop switches to the next candidate instead of spending all retry budget on a weak direction.
+This weighted score is used to update the global best candidate and to decide whether a model is still improving. The early stopping checkpoint remains stricter than a single weighted number: it requires each dimension to pass its own minimum threshold, so a very high quality score cannot hide poor alignment.
 
-Fourth, cross-model memory avoids cold starts. When a new model begins, `_prewarm_initial_args()` uses suggestions collected from previous models to write a better first prompt for the next model.
 
 ### LLM templates used by the core algorithm
 
@@ -554,17 +541,6 @@ User JSON:
 ```
 
 The result is a search loop that behaves more like an engineer improving a generation prompt than a script blindly retrying the same call.
-
-### Tool library and model adapters
-
-`tools_v2.py` loads tool definitions from `config.yaml`, expands environment variables, and binds each configured tool to a runtime adapter under `tool/`. The supported adapters include:
-
-- MMAudio for sound effects.
-- CosyVoice2 and CosyVoice3 for speech.
-- InspireMusic for background music.
-- DiffRhythm for song generation.
-
-The backend does not need to know each model's low-level call details. It asks the `ToolLibrary` for a tool by name, and the tool runtime handles the actual generation request.
 
 ### Stage 4: mixing and muxing
 
